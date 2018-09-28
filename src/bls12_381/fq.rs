@@ -1155,7 +1155,7 @@ impl Fq {
             NativeEndian::write_u32(&mut count_u8, count);
             hasher.input(&count_u8);
             // truncate and shave the hash result
-            BigEndian::read_u64_into(&hasher.result().as_slice()[.. 48], &mut repr);
+            BigEndian::read_u64_into(&hasher.clone().result().as_slice()[.. 48], &mut repr);
             let mut e = Fq(FqRepr(repr));
             e.0.shr(REPR_SHAVE_BITS);
             if e.is_valid() { return e }

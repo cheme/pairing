@@ -1,3 +1,6 @@
+#![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(not(feature = "std"), feature(alloc))]
+
 // If the "u128-support" feature is enabled, this library can use
 // more efficient arithmetic. Only available in the nightly compiler.
 #![cfg_attr(feature = "u128-support", feature(i128_type))]
@@ -12,12 +15,31 @@
 #![cfg_attr(feature = "clippy", allow(unreadable_literal))]
 #![cfg_attr(feature = "clippy", allow(many_single_char_names))]
 #![cfg_attr(feature = "clippy", allow(new_without_default_derive))]
+
 // Force public structures to implement Debug
-#![deny(missing_debug_implementations)]
+#![cfg_attr(feature = "std", deny(missing_debug_implementations))]
 
 extern crate blake2;
 extern crate byteorder;
 extern crate rand;
+
+#[cfg(not(feature = "std"))]
+#[macro_use]
+extern crate alloc;
+
+#[cfg(not(feature = "std"))]
+mod std {
+	pub use core::*;
+	pub use alloc::vec;
+	pub use alloc::string;
+	pub use alloc::boxed;
+	pub use alloc::borrow;
+}
+
+use std::string::String;
+use byteorder::ByteOrder;
+
+pub mod io;
 
 #[cfg(test)]
 pub mod tests;
@@ -26,10 +48,6 @@ pub mod bls12_381;
 
 mod wnaf;
 pub use self::wnaf::Wnaf;
-
-use std::fmt;
-use std::error::Error;
-use std::io::{self, Read, Write};
 
 /// An "engine" is a collection of types (fields, elliptic curve groups, etc.)
 /// with well-defined relationships. In particular, the G1/G2 curve groups are
@@ -122,8 +140,6 @@ pub trait CurveProjective
     + Clone
     + Send
     + Sync
-    + fmt::Debug
-    + fmt::Display
     + rand::Rand
     + 'static {
     type Engine: Engine<Fr = Self::Scalar>;
@@ -185,7 +201,7 @@ pub trait CurveProjective
 /// Affine representation of an elliptic curve point guaranteed to be
 /// in the correct prime order subgroup.
 pub trait CurveAffine
-    : Copy + Clone + Sized + Send + Sync + fmt::Debug + fmt::Display + PartialEq + Eq + 'static
+    : Copy + Clone + Sized + Send + Sync + PartialEq + Eq + 'static
     {
     type Engine: Engine<Fr = Self::Scalar>;
     type Scalar: PrimeField + SqrtField;
@@ -272,7 +288,7 @@ pub trait EncodedPoint
 
 /// This trait represents an element of a field.
 pub trait Field
-    : Sized + Eq + Copy + Clone + Send + Sync + fmt::Debug + fmt::Display + 'static + rand::Rand
+    : Sized + Eq + Copy + Clone + Send + Sync + 'static + rand::Rand
     {
     /// Returns the zero element of the field, the additive identity.
     fn zero() -> Self;
@@ -353,13 +369,12 @@ pub trait PrimeFieldRepr
     + Send
     + Sync
     + Default
-    + fmt::Debug
-    + fmt::Display
     + 'static
     + rand::Rand
     + AsRef<[u64]>
     + AsMut<[u64]>
-    + From<u64> {
+    + From<u64>
+{
     /// Subtract another represetation from this one.
     fn sub_noborrow(&mut self, other: &Self);
 
@@ -394,29 +409,60 @@ pub trait PrimeFieldRepr
     fn shl(&mut self, amt: u32);
 
     /// Writes this `PrimeFieldRepr` as a big endian integer.
-    fn write_be<W: Write>(&self, mut writer: W) -> io::Result<()> {
-        use byteorder::{BigEndian, WriteBytesExt};
+    fn write_be<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
+        use byteorder::BigEndian;
 
-        for digit in self.as_ref().iter().rev() {
-            writer.write_u64::<BigEndian>(*digit)?;
-        }
+		let mut buf = [0u8; 8];
+		for digit in self.as_ref().iter().rev() {
+			BigEndian::write_u64(&mut buf, *digit);
+			writer.write(&buf)?;
+		}
 
         Ok(())
     }
 
     /// Reads a big endian integer into this representation.
-    fn read_be<R: Read>(&mut self, mut reader: R) -> io::Result<()> {
-        use byteorder::{BigEndian, ReadBytesExt};
+    fn read_be<R: io::Read>(&mut self, reader: &mut R) -> io::Result<()> {
+        use byteorder::BigEndian;
 
+		let mut buf = [0u8; 8];
         for digit in self.as_mut().iter_mut().rev() {
-            *digit = reader.read_u64::<BigEndian>()?;
+			reader.read(&mut buf)?;
+			*digit = BigEndian::read_u64(&buf);
+        }
+
+        Ok(())
+    }
+
+    /// Writes this `PrimeFieldRepr` as a little endian integer.
+    fn write_le<W: io::Write>(&self, mut writer: W) -> io::Result<()> {
+        use byteorder::LittleEndian;
+
+		let mut buf = [0u8; 8];
+		for digit in self.as_ref().iter().rev() {
+			LittleEndian::write_u64(&mut buf, *digit);
+			writer.write(&buf)?;
+		}
+
+        Ok(())
+    }
+
+    /// Reads a little endian integer into this representation.
+    fn read_le<R: io::Read>(&mut self, mut reader: R) -> io::Result<()> {
+        use byteorder::LittleEndian;
+
+		let mut buf = [0u8; 8];
+        for digit in self.as_mut().iter_mut().rev() {
+			reader.read(&mut buf)?;
+			*digit = LittleEndian::read_u64(&buf);
         }
 
         Ok(())
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(PartialEq)]
+#[cfg_attr(feature = "std", derive(Debug))]
 pub enum LegendreSymbol {
     Zero = 0,
     QuadraticResidue = 1,
@@ -425,32 +471,14 @@ pub enum LegendreSymbol {
 
 /// An error that may occur when trying to interpret a `PrimeFieldRepr` as a
 /// `PrimeField` element.
-#[derive(Debug)]
+#[cfg_attr(feature = "std", derive(Debug))]
 pub enum PrimeFieldDecodingError {
     /// The encoded value is not in the field
     NotInField(String),
 }
 
-impl Error for PrimeFieldDecodingError {
-    fn description(&self) -> &str {
-        match *self {
-            PrimeFieldDecodingError::NotInField(..) => "not an element of the field",
-        }
-    }
-}
-
-impl fmt::Display for PrimeFieldDecodingError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-        match *self {
-            PrimeFieldDecodingError::NotInField(ref repr) => {
-                write!(f, "{} is not an element of the field", repr)
-            }
-        }
-    }
-}
-
 /// An error that may occur when trying to decode an `EncodedPoint`.
-#[derive(Debug)]
+#[cfg_attr(feature = "std", derive(Debug))]
 pub enum GroupDecodingError {
     /// The coordinate(s) do not lie on the curve.
     NotOnCurve,
@@ -464,37 +492,13 @@ pub enum GroupDecodingError {
     UnexpectedInformation,
 }
 
-impl Error for GroupDecodingError {
-    fn description(&self) -> &str {
-        match *self {
-            GroupDecodingError::NotOnCurve => "coordinate(s) do not lie on the curve",
-            GroupDecodingError::NotInSubgroup => "the element is not part of an r-order subgroup",
-            GroupDecodingError::CoordinateDecodingError(..) => "coordinate(s) could not be decoded",
-            GroupDecodingError::UnexpectedCompressionMode => {
-                "encoding has unexpected compression mode"
-            }
-            GroupDecodingError::UnexpectedInformation => "encoding has unexpected information",
-        }
-    }
-}
-
-impl fmt::Display for GroupDecodingError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-        match *self {
-            GroupDecodingError::CoordinateDecodingError(description, ref err) => {
-                write!(f, "{} decoding error: {}", description, err)
-            }
-            _ => write!(f, "{}", self.description()),
-        }
-    }
-}
-
 /// This represents an element of a prime field.
 pub trait PrimeField: Field {
     /// The prime field can be converted back and forth into this biginteger
     /// representation.
     type Repr: PrimeFieldRepr + From<Self>;
 
+    #[cfg(feature = "std")]
     /// Interpret a string of numbers as a (congruent) prime field element.
     /// Does not accept unnecessary leading zeroes or a blank string.
     fn from_str(s: &str) -> Option<Self> {
